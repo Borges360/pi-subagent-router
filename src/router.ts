@@ -94,6 +94,11 @@ export class GitWorktrees implements WorktreeAdapter {
   }
 }
 export class SubagentRouter implements Service {
+  menuGroups = {
+    Children: ["status", "show"],
+    Decisions: ["explain"],
+    Settings: ["config", "doctor", "off"],
+  };
   capabilities = ["subagent.dispatch.v1", "subagent.advanced.v1"];
   menu = ["status", "show", "explain", "auto"];
   agents: AgentDefinition[] = [];
