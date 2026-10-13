@@ -35,12 +35,32 @@ export class GitWorktrees implements WorktreeAdapter {
   }
   async finish(request: ChildRequest, path: string, result: ChildResult) {
     if (!this.owned.has(path)) throw new Error("unknown-worktree");
+    const status = await runCommand(
+      "git",
+      [
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--no-renames",
+        "--untracked-files=all",
+      ],
+      { cwd: path, timeoutMs: 30000, maxOutputBytes: 1048576 },
+    );
+    if (status.exitCode !== 0 || status.truncated || status.timedOut)
+      throw new Error("worktree-status-incomplete");
+    const changed = status.stdout
+      .split("\0")
+      .filter(Boolean)
+      .map((line) => line.slice(3));
+    if (changed.some((file) => !result.filesChanged.includes(file)))
+      throw new Error("unreported-worktree-changes-review-required");
     const diff = await runCommand("git", ["diff", "--binary", "HEAD"], {
       cwd: path,
       timeoutMs: 30000,
       maxOutputBytes: 1048576,
     });
-    if (diff.exitCode !== 0) throw new Error("worktree-diff-failed");
+    if (diff.exitCode !== 0 || diff.truncated || diff.timedOut)
+      throw new Error("worktree-diff-failed");
     result.openQuestions.push(
       "Isolated changes require parent review and explicit application.",
     );
@@ -51,6 +71,9 @@ export class GitWorktrees implements WorktreeAdapter {
     result.evidenceRefs.push(patch.id);
     for (const file of result.filesChanged) {
       const content = await readFile(await contained(path, file));
+      const text = content.toString("utf8");
+      if (!Buffer.from(text).equals(content) || redactText(text) !== text)
+        throw new Error("worktree-content-needs-local-review");
       const ref = await this.store.writeBlob(
         digest(request.id + ":" + file),
         Buffer.from(redactText(content.toString("utf8"))),
