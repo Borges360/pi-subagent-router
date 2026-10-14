@@ -1,11 +1,76 @@
 import { fork } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bound, id, now, redact } from "./security.js";
 import { put } from "./storage.js";
+function packageEntry(directory) {
+    const manifestPath = join(directory, "package.json");
+    if (!existsSync(manifestPath))
+        return undefined;
+    try {
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+        if (manifest.name !== "@earendil-works/pi-coding-agent")
+            return undefined;
+        const rootExport = manifest.exports?.["."];
+        const entry = typeof rootExport === "string"
+            ? rootExport
+            : rootExport &&
+                typeof rootExport === "object" &&
+                typeof rootExport.import === "string"
+                ? rootExport.import
+                : manifest.module ?? manifest.main;
+        if (!entry || typeof entry !== "string")
+            return undefined;
+        const resolved = resolve(directory, entry);
+        const relativePath = relative(directory, resolved);
+        return relativePath.startsWith("..") || isAbsolute(relativePath) || !existsSync(resolved)
+            ? undefined
+            : resolved;
+    }
+    catch {
+        return undefined;
+    }
+}
+function findHostCodingAgentEntry(anchor) {
+    let current = resolve(anchor);
+    if (!existsSync(join(current, "package.json")))
+        current = dirname(current);
+    while (true) {
+        const direct = packageEntry(current);
+        if (direct)
+            return direct;
+        const dependency = packageEntry(join(current, "node_modules", "@earendil-works", "pi-coding-agent"));
+        if (dependency)
+            return dependency;
+        const parent = dirname(current);
+        if (parent === current)
+            return undefined;
+        current = parent;
+    }
+}
+function resolveHostCodingAgentEntry() {
+    const managedRoot = process.env.PI_MANAGED_INSTALL_ROOT;
+    if (managedRoot) {
+        const version = readFileSync(join(managedRoot, "current-version"), "utf8").trim();
+        if (!/^[0-9A-Za-z._+-]+$/.test(version) || version === "." || version === "..")
+            throw new Error("invalid-managed-pi-version");
+        const entry = findHostCodingAgentEntry(join(managedRoot, "releases", version));
+        if (entry)
+            return entry;
+    }
+    for (const anchor of [
+        fileURLToPath(import.meta.url),
+        ...(process.argv[1] ? [process.argv[1]] : []),
+    ]) {
+        const entry = findHostCodingAgentEntry(anchor);
+        if (entry)
+            return entry;
+    }
+    throw new Error("host-pi-sdk-unavailable");
+}
 export function delegation(owner, objective, agents, config, taskId, options) {
     const none = (reason) => ({
         schemaVersion: 1,
@@ -87,6 +152,7 @@ export async function processRunner(request, config, signal) {
             env[key] = process.env[key];
     }
     env.PI_CODING_AGENT_DIR = directory;
+    env.PI_ECOSYSTEM_HOST_SDK_ENTRY = resolveHostCodingAgentEntry();
     env.HOME = directory;
     env.USERPROFILE = directory;
     try {
