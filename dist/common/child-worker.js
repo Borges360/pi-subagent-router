@@ -1,8 +1,20 @@
 // Separate process, fresh resource loader, explicit tools and credentials only.
-import { createAgentSession, DefaultResourceLoader, SettingsManager, SessionManager, } from "@earendil-works/pi-coding-agent";
 import { readFile, readdir } from "node:fs/promises";
-import { Type } from "typebox";
-import { atomicWrite, bound, contained, digest } from "./security.js";
+import { registerHooks } from "node:module";
+import { pathToFileURL } from "node:url";
+const hostSdkEntry = process.env.PI_ECOSYSTEM_HOST_SDK_ENTRY;
+if (!hostSdkEntry)
+    throw new Error("host-pi-sdk-unavailable");
+const hostSdkUrl = pathToFileURL(hostSdkEntry).href;
+registerHooks({
+    resolve(specifier, context, nextResolve) {
+        if (specifier === "@earendil-works/pi-coding-agent")
+            return { url: hostSdkUrl, shortCircuit: true };
+        if (specifier === "typebox")
+            return nextResolve(specifier, { ...context, parentURL: hostSdkUrl });
+        return nextResolve(specifier, context);
+    },
+});
 process.once("message", async (message) => {
     const { request, agentDir, maxTokens } = message;
     const result = {
@@ -17,6 +29,11 @@ process.once("message", async (message) => {
         openQuestions: [],
     };
     try {
+        const [{ createAgentSession, DefaultResourceLoader, SettingsManager, SessionManager, }, { Type }, { atomicWrite, bound, contained, digest },] = await Promise.all([
+            import("@earendil-works/pi-coding-agent"),
+            import("typebox"),
+            import("./security.js"),
+        ]);
         const settings = SettingsManager.inMemory({});
         const loader = new DefaultResourceLoader({
             cwd: request.cwd,
