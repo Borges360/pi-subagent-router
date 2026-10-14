@@ -94,10 +94,15 @@ export class GitWorktrees implements WorktreeAdapter {
   }
 }
 export class SubagentRouter implements Service {
+  modeDescriptions = {
+    auto: "Delegate eligible independent work to configured agents.",
+    observe: "Show delegation decisions without starting child agents.",
+    off: "Disable automatic delegation.",
+  };
   menuGroups = {
     Children: ["status", "show"],
     Decisions: ["explain"],
-    Settings: ["config", "doctor", "off"],
+    Settings: ["config", "doctor"],
   };
   capabilities = ["subagent.dispatch.v1", "subagent.advanced.v1"];
   menu = ["status", "show", "explain", "auto"];

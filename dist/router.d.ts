@@ -13,6 +13,11 @@ export declare class GitWorktrees implements WorktreeAdapter {
 }
 export declare class SubagentRouter implements Service {
     readonly host: Host;
+    modeDescriptions: {
+        auto: string;
+        observe: string;
+        off: string;
+    };
     menuGroups: {
         Children: string[];
         Decisions: string[];
