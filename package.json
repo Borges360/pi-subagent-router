@@ -1,6 +1,6 @@
 {
   "name": "@borges360/pi-subagent-router",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "pi-subagent-router — independent, evidence-driven Pi extension",
   "type": "module",
   "license": "MIT",
