@@ -726,5 +726,6 @@ test("untrusted and failed locale saves keep the draft without writing the proje
 
 test("a failed trusted locale save retains the draft and leaves no setting file", async (t) => {
   const failed = await exerciseSubagentLocaleMenu(t, { trusted: true, failSave: true });
-  await assert.rejects(readFile(failed.localePath), { code: "ENOENT" });
+  // A fixture troca .pi por um arquivo: ler dentro dele dá ENOENT no Windows e ENOTDIR no POSIX.
+  await assert.rejects(readFile(failed.localePath), { code: /^(ENOENT|ENOTDIR)$/ });
 });
