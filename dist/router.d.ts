@@ -41,6 +41,8 @@ export declare class SubagentRouter implements Service {
         depth?: number;
         write?: boolean;
         tightlyCoupled?: boolean;
+        acceptanceCriteria?: unknown;
+        evidenceRefs?: unknown;
     }, signal?: AbortSignal): Promise<{
         decision: DelegationDecision;
         results: ChildResult[];

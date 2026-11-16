@@ -23,6 +23,80 @@ import {
   projectKey,
   redact,
 } from "./security.js";
+import {
+  LOCALES,
+  actionLabel,
+  loadProjectLocale,
+  messagesFor,
+  saveProjectLocale,
+  type Locale,
+} from "./i18n.js";
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function graphemeCellWidth(value: string): number {
+  if (
+    /[\u200d\ufe0f]/u.test(value) ||
+    /\p{Extended_Pictographic}/u.test(value) ||
+    /[\u{1f1e6}-\u{1f1ff}]/u.test(value)
+  )
+    return 2;
+  let width = 0;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (
+      /\p{Mark}/u.test(character) ||
+      codePoint === 0x200d ||
+      (codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
+      (codePoint >= 0xe0100 && codePoint <= 0xe01ef)
+    )
+      continue;
+    const wide =
+      codePoint >= 0x1100 &&
+      (codePoint <= 0x115f ||
+        codePoint === 0x2329 ||
+        codePoint === 0x232a ||
+        (codePoint >= 0x2e80 && codePoint <= 0xa4cf) ||
+        (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+        (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+        (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+        (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+        (codePoint >= 0xff01 && codePoint <= 0xff60) ||
+        (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+        (codePoint >= 0x1f200 && codePoint <= 0x1f251) ||
+        (codePoint >= 0x20000 && codePoint <= 0x3fffd));
+    width += wide ? 2 : 1;
+  }
+  return width;
+}
+
+function displayCellWidth(value: string): number {
+  let width = 0;
+  for (const part of graphemes.segment(value))
+    width += graphemeCellWidth(part.segment);
+  return width;
+}
+
+function fitCells(value: string, requestedWidth: number): string {
+  const width = Math.max(0, Math.floor(requestedWidth));
+  if (displayCellWidth(value) <= width) return value;
+  if (!width) return "";
+  const available = width - 1;
+  let result = "";
+  let used = 0;
+  for (const part of graphemes.segment(value)) {
+    const partWidth = graphemeCellWidth(part.segment);
+    if (used + partWidth > available) break;
+    result += part.segment;
+    used += partWidth;
+  }
+  return result + "…";
+}
+
+function fitAndPadCells(value: string, width: number): string {
+  const fitted = fitCells(value, width);
+  return fitted + " ".repeat(Math.max(0, width - displayCellWidth(fitted)));
+}
 
 export interface CommandContext {
   cwd: string;
@@ -165,12 +239,13 @@ export class Host {
     return result;
   }
   async configure(patch: Partial<Config>) {
-    this.config = await loadConfig(this.extension, this.cwd, this.trusted, {
+    const next = await loadConfig(this.extension, this.cwd, this.trusted, {
       ...this.config,
       ...patch,
     });
-    await saveConfig(this.extension, this.config);
-    return this.config;
+    await saveConfig(this.extension, next);
+    this.config = next;
+    return next;
   }
   async doctor() {
     const recovery = await this.store.recover();
@@ -345,6 +420,15 @@ export function register(
       const h = await get(ctx);
       let parts = args.trim().split(/\s+/).filter(Boolean);
       const interactive = ctx.mode === "tui" && ctx.hasUI;
+      const localeEnabled = command === "subagents";
+      const localeNeeded =
+        localeEnabled &&
+        interactive &&
+        (!parts.length || parts[0] === "config" || parts[0] === "mode");
+      let activeLocale: Locale = localeNeeded
+        ? await loadProjectLocale(ctx.cwd, ctx.isProjectTrusted())
+        : "en";
+      let draftLocale = activeLocale;
       const displayNames: Record<string, string> = {
         longrun: "Longrun",
         autoskills: "AutoSkills",
@@ -352,34 +436,62 @@ export function register(
         subagents: "Subagent Router",
         mcprouter: "MCP Router",
       };
-      const displayName = displayNames[command] ?? extension;
-      const groups = h.service.menuGroups ?? {
+      const defaultDisplayName = displayNames[command] ?? extension;
+      const displayName = (locale: Locale) =>
+        localeEnabled ? messagesFor(locale).extensionName : defaultDisplayName;
+      const baseGroups = h.service.menuGroups ?? {
         Actions: h.service.menu,
         Settings: ["config", "doctor"],
       };
+      const groups =
+        localeEnabled && h.service.menuGroups
+          ? {
+              ...h.service.menuGroups,
+              Settings: [
+                ...(h.service.menuGroups.Settings ?? ["config", "doctor"]),
+                "language",
+              ],
+            }
+          : baseGroups;
+      const groupLabel = (group: string, locale = draftLocale) =>
+        localeEnabled
+          ? messagesFor(locale).groups[
+              group as keyof ReturnType<typeof messagesFor>["groups"]
+            ] ?? group
+          : group;
+      const menuActionLabel = (action: string, locale = draftLocale) =>
+        localeEnabled ? actionLabel(locale, action) : action;
       const options = [
         {
           action: "auto" as const,
-          label: "Automatic",
-          description:
-            h.service.modeDescriptions?.auto ??
-            "Allow eligible actions when this extension's policy permits.",
         },
         {
           action: "observe" as const,
-          label: "Observe",
-          description:
-            h.service.modeDescriptions?.observe ??
-            "Show decisions without acting automatically.",
         },
         {
           action: "off" as const,
-          label: "Off",
-          description:
-            h.service.modeDescriptions?.off ??
-            "Disable this extension's automatic behavior.",
         },
       ];
+      const modeLabel = (action: (typeof options)[number]["action"], locale = draftLocale) =>
+        localeEnabled
+          ? messagesFor(locale).modeLabels[action]
+          : action === "auto"
+            ? "Automatic"
+            : action === "observe"
+              ? "Observe"
+              : "Off";
+      const modeDescription = (
+        action: (typeof options)[number]["action"],
+        locale = draftLocale,
+      ) =>
+        localeEnabled
+          ? messagesFor(locale).modeDescriptions[action]
+          : h.service.modeDescriptions?.[action] ??
+            (action === "auto"
+              ? "Allow eligible actions when this extension's policy permits."
+              : action === "observe"
+                ? "Show decisions without acting automatically."
+                : "Disable this extension's automatic behavior.");
       const formatKey = (key: string) =>
         ({
           enter: "Enter",
@@ -398,18 +510,32 @@ export function register(
             ? "observe"
             : "auto";
       const showModePanel = async () => {
+        const copy = localeEnabled
+          ? messagesFor(draftLocale).mode
+          : messagesFor("en").mode;
+        if (typeof ctx.ui.custom !== "function") {
+          show({ error: "interactive-mode-panel-unavailable" });
+          return;
+        }
         let activeAction = currentMode();
+        let draftAction = activeAction;
         let selectedIndex = options.findIndex(
           (option) => option.action === activeAction,
         );
         let status = "";
+        let discardArmed = false;
+        let disposed = false;
         await ctx.ui.custom<void>(
           (tui, theme, keybindings, done) => {
             let saving = false;
-            const confirmKeys = keyText(
-              keybindings.getKeys("tui.select.confirm"),
-              "Enter",
-            );
+            const requestRender = () => {
+              if (!disposed) tui.requestRender();
+            };
+            const close = () => {
+              disposed = true;
+              done(undefined);
+            };
+            const confirmKeys = keyText(keybindings.getKeys("tui.select.confirm"), "Enter");
             const cancelKeys = keyText(
               keybindings.getKeys("tui.select.cancel"),
               "Esc",
@@ -419,83 +545,125 @@ export function register(
               keybindings.getKeys("tui.select.down"),
               "↓",
             );
-            const fit = (line: string, width: number) =>
-              line.length <= width
-                ? line
-                : line.slice(0, Math.max(0, width - 1)) + "…";
 
             return {
               render(width) {
                 const current =
                   options.find((option) => option.action === activeAction) ??
                   options[0]!;
+                const draft =
+                  options.find((option) => option.action === draftAction) ??
+                  options[0]!;
                 const selected = options[selectedIndex]!;
                 const lines = [
-                  `${displayName} / Settings / Mode`,
+                  `${displayName(draftLocale)} / ${groupLabel("Settings")} / ${copy.title}`,
                   "",
-                  `Current mode: ${current.label}`,
+                  `${copy.current}: ${modeLabel(current.action)}`,
+                  `${copy.draft}: ${modeLabel(draft.action)}${draftAction !== activeAction ? ` ${copy.unsaved}` : ""}`,
                   "",
-                  "Choose a mode",
+                  copy.choose,
                   ...options.map(
                     (option, index) =>
-                      `${index === selectedIndex ? "›" : " "} ${option.label}${
-                        option.action === activeAction ? "  (current)" : ""
+                      `${index === selectedIndex ? "›" : " "} ${modeLabel(option.action)}${
+                        option.action === activeAction ? `  ${copy.currentMark}` : ""
                       }`,
                   ),
                   "",
-                  selected.description,
+                  modeDescription(selected.action),
                   "",
-                  `${upKeys} / ${downKeys} Move    ${confirmKeys} Save    ${cancelKeys} Back`,
+                  `${upKeys} / ${downKeys} ${copy.move}    ${confirmKeys} ${copy.select}    Ctrl+S ${copy.save}    ${cancelKeys} ${copy.back}`,
                   status,
                 ];
                 return lines.map((line, index) => {
-                  const visible = fit(line, width).padEnd(width, " ");
-                  const selectedRow = index === 5 + selectedIndex;
+                  const visible = fitAndPadCells(line, width);
+                  const selectedRow = index === 6 + selectedIndex;
                   const foreground =
-                    index === 0 || index === 4 || selectedRow
+                    index === 0 || index === 5 || selectedRow
                       ? theme.fg("accent", theme.bold(visible))
                       : theme.fg("toolOutput", visible);
                   return theme.bg("toolPendingBg", foreground);
                 });
               },
               invalidate() {},
+              dispose() {
+                disposed = true;
+              },
               async handleInput(data) {
+                if (disposed) return;
                 if (keybindings.matches(data, "tui.select.cancel")) {
-                  done(undefined);
+                  if (saving) {
+                    status = copy.saveInProgress;
+                    requestRender();
+                    return;
+                  }
+                  if (draftAction !== activeAction && !discardArmed) {
+                    discardArmed = true;
+                    status = copy.unsavedWarning;
+                    requestRender();
+                    return;
+                  }
+                  close();
                   return;
                 }
                 if (keybindings.matches(data, "tui.select.up")) {
                   selectedIndex =
                     (selectedIndex + options.length - 1) % options.length;
-                  tui.requestRender();
+                  discardArmed = false;
+                  status = "";
+                  requestRender();
                   return;
                 }
                 if (keybindings.matches(data, "tui.select.down")) {
                   selectedIndex = (selectedIndex + 1) % options.length;
-                  tui.requestRender();
+                  discardArmed = false;
+                  status = "";
+                  requestRender();
                   return;
                 }
-                if (saving || !keybindings.matches(data, "tui.select.confirm"))
+                if (keybindings.matches(data, "tui.select.confirm")) {
+                  draftAction = options[selectedIndex]!.action;
+                  discardArmed = false;
+                  status =
+                    draftAction === activeAction
+                      ? copy.noChange
+                      : copy.selectedDraft;
+                  requestRender();
                   return;
+                }
+                const savePressed =
+                  data === "\u0013" || /^(?:ctrl|control)\+s$/i.test(data);
+                if (!savePressed || saving) return;
+                if (draftAction === activeAction) {
+                  status = copy.noChange;
+                  requestRender();
+                  return;
+                }
                 saving = true;
+                discardArmed = false;
                 try {
-                  const selected = options[selectedIndex]!;
-                  await h.serial(() =>
-                    h.command(selected.action, [], {
+                  await h.serial(() => {
+                    if (disposed) throw new Error("mode-panel-closed");
+                    return h.command(draftAction, [], {
                       cwd: ctx.cwd,
                       trusted: ctx.isProjectTrusted(),
                       hostContext: ctx,
                       commandContext: ctx,
                       signal: ctx.signal,
-                    }),
-                  );
-                  activeAction = selected.action;
-                  status = `Saved: ${selected.label}.`;
+                    });
+                  });
+                  if (disposed) return;
+                  activeAction = draftAction;
+                  status = localeEnabled
+                    ? copy.saved.replace(
+                        "{mode}",
+                        modeLabel(activeAction as "auto" | "observe" | "off"),
+                      )
+                    : `Saved: ${modeLabel(activeAction as "auto" | "observe" | "off")}.`;
                 } catch {
-                  status = "Could not save the mode. Try again.";
+                  if (!disposed) status = copy.saveFailed;
                 } finally {
                   saving = false;
-                  tui.requestRender();
+                  requestRender();
                 }
               },
             };
@@ -504,7 +672,265 @@ export function register(
             overlay: true,
             overlayOptions: {
               width: "72%",
-              maxHeight: 15,
+              maxHeight: 17,
+              anchor: "center",
+              margin: 1,
+            },
+          },
+        );
+      };
+      const showLanguagePanel = async () => {
+        if (!localeEnabled) return;
+        if (typeof ctx.ui.custom !== "function") {
+          show({ error: messagesFor(draftLocale).language.unavailable });
+          return;
+        }
+        let selectedIndex = Math.max(0, LOCALES.indexOf(draftLocale));
+        let status = "";
+        let saving = false;
+        let disposed = false;
+        await ctx.ui.custom<void>(
+          (tui, theme, keybindings, done) => {
+            const close = () => {
+              disposed = true;
+              done(undefined);
+            };
+            const requestRender = () => {
+              if (!disposed) tui.requestRender();
+            };
+            const confirmKeys = keyText(keybindings.getKeys("tui.select.confirm"), "Enter");
+            const cancelKeys = keyText(keybindings.getKeys("tui.select.cancel"), "Esc");
+            const upKeys = keyText(keybindings.getKeys("tui.select.up"), "↑");
+            const downKeys = keyText(keybindings.getKeys("tui.select.down"), "↓");
+
+            return {
+              render(width) {
+                const copy = messagesFor(draftLocale).language;
+                const currentName =
+                  activeLocale === "en" ? copy.english : copy.portuguese;
+                const draftName =
+                  draftLocale === "en" ? copy.english : copy.portuguese;
+                const labels = [copy.english, copy.portuguese];
+                const lines = [
+                  `${displayName(draftLocale)} / ${groupLabel("Settings")} / ${copy.title}`,
+                  "",
+                  `${copy.current}: ${currentName}`,
+                  `${copy.draft}: ${draftName}${draftLocale !== activeLocale ? ` ${copy.unsaved}` : ""}`,
+                  "",
+                  copy.choose,
+                  ...labels.map(
+                    (label, index) =>
+                      `${index === selectedIndex ? "›" : " "} ${label}${
+                        LOCALES[index] === activeLocale ? `  ${copy.currentMark}` : ""
+                      }`,
+                  ),
+                  "",
+                  `${upKeys} / ${downKeys} ${copy.move}    ${confirmKeys} ${copy.select}    Ctrl+S ${copy.save}    ${cancelKeys} ${copy.back}`,
+                  status,
+                ];
+                return lines.map((line, index) => {
+                  const visible = fitAndPadCells(line, width);
+                  const selectedRow = index === 6 + selectedIndex;
+                  const foreground =
+                    index === 0 || index === 5 || selectedRow
+                      ? theme.fg("accent", theme.bold(visible))
+                      : theme.fg("toolOutput", visible);
+                  return theme.bg("toolPendingBg", foreground);
+                });
+              },
+              invalidate() {},
+              dispose() {
+                disposed = true;
+              },
+              async handleInput(data) {
+                if (disposed) return;
+                const copy = messagesFor(draftLocale).language;
+                if (keybindings.matches(data, "tui.select.cancel")) {
+                  if (saving) {
+                    status = copy.saveInProgress;
+                    requestRender();
+                    return;
+                  }
+                  close();
+                  return;
+                }
+                if (keybindings.matches(data, "tui.select.up")) {
+                  selectedIndex = (selectedIndex + LOCALES.length - 1) % LOCALES.length;
+                  status = "";
+                  requestRender();
+                  return;
+                }
+                if (keybindings.matches(data, "tui.select.down")) {
+                  selectedIndex = (selectedIndex + 1) % LOCALES.length;
+                  status = "";
+                  requestRender();
+                  return;
+                }
+                if (keybindings.matches(data, "tui.select.confirm")) {
+                  const selected = LOCALES[selectedIndex]!;
+                  const unchanged = selected === draftLocale;
+                  draftLocale = selected;
+                  status = unchanged
+                    ? messagesFor(draftLocale).language.noChange
+                    : messagesFor(draftLocale).language.selectedDraft;
+                  requestRender();
+                  return;
+                }
+                const savePressed =
+                  data === "\u0013" || /^(?:ctrl|control)\+s$/i.test(data);
+                if (!savePressed || saving) return;
+                if (draftLocale === activeLocale) {
+                  status = copy.noChange;
+                  requestRender();
+                  return;
+                }
+                const trusted = ctx.isProjectTrusted();
+                if (!trusted) {
+                  status = copy.untrusted;
+                  requestRender();
+                  return;
+                }
+                saving = true;
+                try {
+                  await h.serial(() => {
+                    if (disposed) throw new Error("language-panel-closed");
+                    return saveProjectLocale(ctx.cwd, trusted, draftLocale);
+                  });
+                  if (disposed) return;
+                  activeLocale = draftLocale;
+                  status = messagesFor(draftLocale).language.saved;
+                } catch {
+                  if (!disposed)
+                    status = messagesFor(draftLocale).language.saveFailed;
+                } finally {
+                  saving = false;
+                  requestRender();
+                }
+              },
+            };
+          },
+          {
+            overlay: true,
+            overlayOptions: {
+              width: "72%",
+              maxHeight: 16,
+              anchor: "center",
+              margin: 1,
+            },
+          },
+        );
+      };
+      type MenuSelection =
+        | { kind: "close" }
+        | { kind: "config"; group: string }
+        | { kind: "language"; group: string }
+        | { kind: "action"; selected: string; group: string };
+      const showCustomMenu = async (
+        initialGroup?: string,
+        rootWarning = "",
+      ): Promise<MenuSelection> => {
+        const groupNames = Object.keys(groups);
+        let groupIndex = Math.max(0, initialGroup ? groupNames.indexOf(initialGroup) : 0);
+        let actionIndex = 0;
+        let page: "groups" | "actions" =
+          initialGroup && groupNames.includes(initialGroup) ? "actions" : "groups";
+        return ctx.ui.custom<MenuSelection>(
+          (tui, theme, keybindings, done) => {
+            const copy = messagesFor(draftLocale).mode;
+            const confirmKeys = keyText(keybindings.getKeys("tui.select.confirm"), "Enter");
+            const cancelKeys = keyText(keybindings.getKeys("tui.select.cancel"), "Esc");
+            const upKeys = keyText(keybindings.getKeys("tui.select.up"), "↑");
+            const downKeys = keyText(keybindings.getKeys("tui.select.down"), "↓");
+            return {
+              render(width) {
+                const group = groupNames[groupIndex] ?? "Actions";
+                const entries = page === "groups" ? groupNames : groups[group] ?? [];
+                const selectedIndex = page === "groups" ? groupIndex : actionIndex;
+                const title =
+                  page === "groups"
+                    ? displayName(draftLocale)
+                    : `${displayName(draftLocale)} / ${groupLabel(group)}`;
+                const lines = [
+                  title,
+                  "",
+                  ...entries.map((entry, index) => {
+                    const label = page === "groups"
+                      ? groupLabel(entry)
+                      : menuActionLabel(entry);
+                    return `${index === selectedIndex ? "›" : " "} ${label}`;
+                  }),
+                  "",
+                  `${upKeys} / ${downKeys} ${copy.move}    ${confirmKeys} ${page === "groups" ? copy.open : copy.select}    ${cancelKeys} ${page === "groups" ? copy.close : copy.back}`,
+                  ...(page === "groups" && rootWarning ? [rootWarning] : []),
+                ];
+                return lines.map((line, index) => {
+                  const visible = fitAndPadCells(line, width);
+                  const selectedRow = index === 2 + selectedIndex;
+                  const foreground =
+                    index === 0 || selectedRow
+                      ? theme.fg("accent", theme.bold(visible))
+                      : theme.fg("toolOutput", visible);
+                  return theme.bg("toolPendingBg", foreground);
+                });
+              },
+              invalidate() {},
+              handleInput(data) {
+                if (keybindings.matches(data, "tui.select.cancel")) {
+                  if (page === "actions") {
+                    page = "groups";
+                    tui.requestRender();
+                  } else done({ kind: "close" });
+                  return;
+                }
+                const entries =
+                  page === "groups"
+                    ? groupNames
+                    : groups[groupNames[groupIndex] ?? ""] ?? [];
+                if (keybindings.matches(data, "tui.select.up")) {
+                  if (entries.length)
+                    page === "groups"
+                      ? (groupIndex = (groupIndex + entries.length - 1) % entries.length)
+                      : (actionIndex = (actionIndex + entries.length - 1) % entries.length);
+                  tui.requestRender();
+                  return;
+                }
+                if (keybindings.matches(data, "tui.select.down")) {
+                  if (entries.length)
+                    page === "groups"
+                      ? (groupIndex = (groupIndex + 1) % entries.length)
+                      : (actionIndex = (actionIndex + 1) % entries.length);
+                  tui.requestRender();
+                  return;
+                }
+                if (!keybindings.matches(data, "tui.select.confirm")) return;
+                const selectedGroup = groupNames[groupIndex] ?? "Actions";
+                if (page === "groups") {
+                  page = "actions";
+                  actionIndex = 0;
+                  tui.requestRender();
+                  return;
+                }
+                const selected = (groups[selectedGroup] ?? [])[actionIndex];
+                if (!selected) {
+                  done({ kind: "close" });
+                  return;
+                }
+                const action = selected.split(/\s+/)[0] ?? "status";
+                done(
+                  action === "config" || action === "mode"
+                    ? { kind: "config", group: selectedGroup }
+                    : action === "language"
+                      ? { kind: "language", group: selectedGroup }
+                      : { kind: "action", selected, group: selectedGroup },
+                );
+              },
+            };
+          },
+          {
+            overlay: true,
+            overlayOptions: {
+              width: "72%",
+              maxHeight: Math.min(20, Object.keys(groups).length + 8),
               anchor: "center",
               margin: 1,
             },
@@ -512,24 +938,100 @@ export function register(
         );
       };
       const runMenu = async (initialGroup?: string) => {
+        if (typeof ctx.ui.custom === "function") {
+          let group = initialGroup;
+          let rootDiscardArmed = false;
+          while (true) {
+            const warning =
+              localeEnabled && rootDiscardArmed
+                ? messagesFor(draftLocale).language.unsavedRootWarning
+                : "";
+            const selection = await showCustomMenu(group, warning);
+            if (selection.kind === "close") {
+              if (localeEnabled && draftLocale !== activeLocale) {
+                if (!rootDiscardArmed) {
+                  rootDiscardArmed = true;
+                  group = undefined;
+                  continue;
+                }
+                draftLocale = activeLocale;
+              }
+              return;
+            }
+            rootDiscardArmed = false;
+            if (selection.kind === "language") {
+              await showLanguagePanel();
+              group = selection.group;
+              continue;
+            }
+            if (selection.kind === "config") {
+              await showModePanel();
+              group = selection.group;
+              continue;
+            }
+            let selectedParts = selection.selected.split(/\s+/);
+            const inputTitle = h.service.menuInputs?.[selection.selected];
+            if (inputTitle) {
+              const value = await ctx.ui.input(inputTitle);
+              if (!value?.trim()) {
+                group = selection.group;
+                continue;
+              }
+              selectedParts.push(value.trim());
+            }
+            const action = selectedParts.shift() ?? "status";
+            const result = await h.serial(() =>
+              h.command(action, selectedParts, {
+                cwd: ctx.cwd,
+                trusted: ctx.isProjectTrusted(),
+                hostContext: ctx,
+                commandContext: ctx,
+                signal: ctx.signal,
+              }),
+            );
+            show(result);
+            group = selection.group;
+          }
+        }
         let group = initialGroup;
         while (true) {
           if (!group) {
-            group = await ctx.ui.select(displayName, Object.keys(groups));
+            const groupNames = Object.keys(groups);
+            const selectedGroupLabel = await ctx.ui.select(
+              displayName(draftLocale),
+              groupNames.map((entry) => groupLabel(entry)),
+            );
+            if (!selectedGroupLabel) return;
+            group = groupNames[
+              groupNames.map((entry) => groupLabel(entry)).indexOf(selectedGroupLabel)
+            ];
             if (!group) return;
           }
-          const selected = await ctx.ui.select(
-            `${displayName} / ${group}`,
-            groups[group] ?? [],
+          const entries = groups[group] ?? [];
+          const selectedLabel = await ctx.ui.select(
+            `${displayName(draftLocale)} / ${groupLabel(group)}`,
+            entries.map((entry) => menuActionLabel(entry)),
           );
+          if (!selectedLabel) {
+            group = undefined;
+            continue;
+          }
+          const selected = entries[
+            entries.map((entry) => menuActionLabel(entry)).indexOf(selectedLabel)
+          ];
           if (!selected) {
             group = undefined;
             continue;
           }
           let selectedParts = selected.split(/\s+/);
           const selectedAction = selectedParts[0] ?? "status";
+          if (selectedAction === "language") {
+            await showLanguagePanel();
+            continue;
+          }
           if (selectedAction === "config" || selectedAction === "mode") {
-            await showModePanel();
+            if (typeof ctx.ui.custom === "function") await showModePanel();
+            else show({ error: "interactive-mode-panel-unavailable" });
             continue;
           }
           const inputTitle = h.service.menuInputs?.[selected];

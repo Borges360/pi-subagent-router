@@ -43,7 +43,8 @@
     "LICENSE",
     "src",
     "benchmarks",
-    "ACCEPTANCE.md"
+    "ACCEPTANCE.md",
+    "docs/assets"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

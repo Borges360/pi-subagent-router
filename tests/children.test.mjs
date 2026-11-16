@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { defaults } from "../dist/common/config.js";
 import {
   ChildDispatcher,
+  childTaskPackage,
   delegation,
   processRunner,
 } from "../dist/common/children.js";
@@ -55,6 +56,37 @@ test("delegation is selective; depth, trust, writes and coupled work have determ
     }).mode,
     "none",
   );
+});
+test("delegation passes a bounded task package with criteria, evidence, scope and selected model", () => {
+  const c = defaults("test");
+  const decision = delegation("test", "Review the isolated change", [agent], c, "t", {
+    cwd: process.cwd(),
+    review: true,
+    acceptanceCriteria: [
+      " Confirm the changed behavior ",
+      7,
+      "x".repeat(500),
+      ...Array.from({ length: 8 }, (_, index) => `criterion-${index}`),
+    ],
+    evidenceRefs: ["docs/validation.md", "sha256:abc123"],
+  });
+  const request = decision.children[0];
+  assert.equal(request.acceptanceCriteria.length, 8);
+  assert.equal(request.acceptanceCriteria[0], "Confirm the changed behavior");
+  assert.equal(request.acceptanceCriteria[1], "x".repeat(400));
+  assert.ok(request.acceptanceCriteria.every((item) => item.length <= 400));
+  assert.deepEqual(request.evidenceRefs, ["docs/validation.md", "sha256:abc123"]);
+  const taskPackage = JSON.parse(
+    childTaskPackage(request, "openrouter/example-model"),
+  );
+  assert.equal(taskPackage.objective, "Review the isolated change");
+  assert.deepEqual(taskPackage.scope, {
+    access: "read-only",
+    paths: ["project root"],
+  });
+  assert.deepEqual(taskPackage.acceptanceCriteria, request.acceptanceCriteria);
+  assert.deepEqual(taskPackage.evidenceRefs, request.evidenceRefs);
+  assert.equal(taskPackage.permittedModel, "openrouter/example-model");
 });
 test("child process timeout is bounded and returns a structured result", async () => {
   const c = { ...defaults("test"), childTimeoutMs: 100 };

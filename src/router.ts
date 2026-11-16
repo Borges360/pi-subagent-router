@@ -151,6 +151,8 @@ export class SubagentRouter implements Service {
         cwd: string;
         readOnly: boolean;
         expiresAt: number;
+        acceptanceCriteria?: unknown;
+        evidenceRefs?: unknown;
       };
       if (
         !this.host.config.enabled ||
@@ -177,6 +179,8 @@ export class SubagentRouter implements Service {
           agentId: p.agentId,
           taskId: p.taskId,
           review: true,
+          acceptanceCriteria: p.acceptanceCriteria,
+          evidenceRefs: p.evidenceRefs,
         }),
       );
       this.pending.add(work);
@@ -201,6 +205,8 @@ export class SubagentRouter implements Service {
       depth?: number;
       write?: boolean;
       tightlyCoupled?: boolean;
+      acceptanceCriteria?: unknown;
+      evidenceRefs?: unknown;
     } = {},
     signal?: AbortSignal,
   ) {
@@ -214,7 +220,12 @@ export class SubagentRouter implements Service {
       agents,
       this.host.config,
       taskId,
-      { ...options, cwd: this.host.cwd },
+      {
+        ...options,
+        cwd: this.host.cwd,
+        acceptanceCriteria: options.acceptanceCriteria,
+        evidenceRefs: options.evidenceRefs,
+      },
     );
     for (const child of decision.children)
       child.id = digest(taskId + ":" + child.agent.id);
