@@ -18,6 +18,16 @@ export default function (pi: ExtensionAPI) {
       objective: Type.String(),
       agentId: Type.Optional(Type.String()),
       independent: Type.Boolean(),
+      acceptanceCriteria: Type.Optional(
+        Type.Array(Type.String({ minLength: 1, maxLength: 400 }), {
+          maxItems: 8,
+        }),
+      ),
+      evidenceRefs: Type.Optional(
+        Type.Array(Type.String({ minLength: 1, maxLength: 400 }), {
+          maxItems: 8,
+        }),
+      ),
     }),
     execute: async (_id, input, signal, _update, ctx) => {
       const h = await runtime.get(ctx);
@@ -29,6 +39,8 @@ export default function (pi: ExtensionAPI) {
               agentId: input.agentId,
               independent: input.independent,
               review: true,
+              acceptanceCriteria: input.acceptanceCriteria,
+              evidenceRefs: input.evidenceRefs,
             },
             signal,
           ),

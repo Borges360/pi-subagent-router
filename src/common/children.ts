@@ -92,6 +92,8 @@ export interface ChildRequest {
   id: string;
   taskId: string;
   objective: string;
+  acceptanceCriteria?: string[];
+  evidenceRefs?: string[];
   agent: AgentDefinition;
   depth: number;
   ancestors: string[];
@@ -129,6 +131,17 @@ export interface WorktreeAdapter {
   ): Promise<void>;
   remove(path: string): Promise<void>;
 }
+function boundedContextItems(value: unknown) {
+  return Array.isArray(value)
+    ? value
+        .filter(
+          (item): item is string =>
+            typeof item === "string" && item.trim().length > 0,
+        )
+        .slice(0, 8)
+        .map((item) => bound(item.trim(), 134).slice(0, 400))
+    : [];
+}
 export type ChildRunner = (
   request: ChildRequest,
   config: Config,
@@ -149,6 +162,8 @@ export function delegation(
     contextChars?: number;
     write?: boolean;
     tightlyCoupled?: boolean;
+    acceptanceCriteria?: unknown;
+    evidenceRefs?: unknown;
   },
 ): DelegationDecision {
   const none = (reason: string): DelegationDecision => ({
@@ -194,6 +209,8 @@ export function delegation(
       id: id(),
       taskId,
       objective,
+      acceptanceCriteria: boundedContextItems(options.acceptanceCriteria),
+      evidenceRefs: boundedContextItems(options.evidenceRefs),
       agent,
       depth: (options.depth ?? 0) + 1,
       ancestors: [...(options.ancestors ?? []), agent.id],
@@ -202,6 +219,25 @@ export function delegation(
       cwd: options.cwd,
     })),
   };
+}
+export function childTaskPackage(
+  request: ChildRequest,
+  permittedModel: string,
+) {
+  return JSON.stringify({
+    objective: bound(request.objective, 4000),
+    scope: {
+      access: request.readOnly ? "read-only" : "isolated-write",
+      paths: request.agent.paths.length
+        ? request.agent.paths
+            .slice(0, 20)
+            .map((path) => bound(path, 100).slice(0, 300))
+        : ["project root"],
+    },
+    acceptanceCriteria: boundedContextItems(request.acceptanceCriteria),
+    evidenceRefs: boundedContextItems(request.evidenceRefs),
+    permittedModel: bound(permittedModel, 67).slice(0, 200),
+  });
 }
 export async function processRunner(
   request: ChildRequest,

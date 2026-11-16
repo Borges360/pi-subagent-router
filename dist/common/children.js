@@ -71,6 +71,14 @@ function resolveHostCodingAgentEntry() {
     }
     throw new Error("host-pi-sdk-unavailable");
 }
+function boundedContextItems(value) {
+    return Array.isArray(value)
+        ? value
+            .filter((item) => typeof item === "string" && item.trim().length > 0)
+            .slice(0, 8)
+            .map((item) => bound(item.trim(), 134).slice(0, 400))
+        : [];
+}
 export function delegation(owner, objective, agents, config, taskId, options) {
     const none = (reason) => ({
         schemaVersion: 1,
@@ -109,6 +117,8 @@ export function delegation(owner, objective, agents, config, taskId, options) {
             id: id(),
             taskId,
             objective,
+            acceptanceCriteria: boundedContextItems(options.acceptanceCriteria),
+            evidenceRefs: boundedContextItems(options.evidenceRefs),
             agent,
             depth: (options.depth ?? 0) + 1,
             ancestors: [...(options.ancestors ?? []), agent.id],
@@ -117,6 +127,22 @@ export function delegation(owner, objective, agents, config, taskId, options) {
             cwd: options.cwd,
         })),
     };
+}
+export function childTaskPackage(request, permittedModel) {
+    return JSON.stringify({
+        objective: bound(request.objective, 4000),
+        scope: {
+            access: request.readOnly ? "read-only" : "isolated-write",
+            paths: request.agent.paths.length
+                ? request.agent.paths
+                    .slice(0, 20)
+                    .map((path) => bound(path, 100).slice(0, 300))
+                : ["project root"],
+        },
+        acceptanceCriteria: boundedContextItems(request.acceptanceCriteria),
+        evidenceRefs: boundedContextItems(request.evidenceRefs),
+        permittedModel: bound(permittedModel, 67).slice(0, 200),
+    });
 }
 export async function processRunner(request, config, signal) {
     const directory = await mkdtemp(join(tmpdir(), "pi-child-"));

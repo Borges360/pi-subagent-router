@@ -132,6 +132,8 @@ export class SubagentRouter {
                 agentId: p.agentId,
                 taskId: p.taskId,
                 review: true,
+                acceptanceCriteria: p.acceptanceCriteria,
+                evidenceRefs: p.evidenceRefs,
             }));
             this.pending.add(work);
             void work
@@ -150,7 +152,12 @@ export class SubagentRouter {
         const agents = options.agentId
             ? this.agents.filter((a) => a.id === options.agentId)
             : this.agents;
-        const decision = delegation("pi-subagent-router", objective, agents, this.host.config, taskId, { ...options, cwd: this.host.cwd });
+        const decision = delegation("pi-subagent-router", objective, agents, this.host.config, taskId, {
+            ...options,
+            cwd: this.host.cwd,
+            acceptanceCriteria: options.acceptanceCriteria,
+            evidenceRefs: options.evidenceRefs,
+        });
         for (const child of decision.children)
             child.id = digest(taskId + ":" + child.agent.id);
         this.decision = decision;

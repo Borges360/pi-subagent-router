@@ -16,6 +16,8 @@ export interface ChildRequest {
     id: string;
     taskId: string;
     objective: string;
+    acceptanceCriteria?: string[];
+    evidenceRefs?: string[];
     agent: AgentDefinition;
     depth: number;
     ancestors: string[];
@@ -59,7 +61,10 @@ export declare function delegation(owner: string, objective: string, agents: Age
     contextChars?: number;
     write?: boolean;
     tightlyCoupled?: boolean;
+    acceptanceCriteria?: unknown;
+    evidenceRefs?: unknown;
 }): DelegationDecision;
+export declare function childTaskPackage(request: ChildRequest, permittedModel: string): string;
 export declare function processRunner(request: ChildRequest, config: Config, signal?: AbortSignal): Promise<ChildResult>;
 export declare class ChildDispatcher {
     readonly store: StorageBase;
